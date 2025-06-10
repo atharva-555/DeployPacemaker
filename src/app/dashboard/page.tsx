@@ -65,9 +65,8 @@ export default function DashboardPage() {
       if (!isPolling) return;
       
       try {
-        const response = await fetch(`http://${ESP32_IP}/status`, {
+        const response = await fetch(`/api/esp32-proxy?path=status`, {
           method: 'GET',
-          mode: 'cors',
           headers: {
             'Accept': 'application/json',
           },
@@ -101,13 +100,13 @@ export default function DashboardPage() {
           setLastUpdateTime(formatTime(currentTime))
           retryCount = 0
         } else {
-          console.log('Dashboard Status response not OK:', response.status)
+          console.log('Dashboard Status response not OK (via proxy):', response.status)
           setIsConnected(false)
           retryCount++
           setCurrentHeartRate(0); // Reset BPM on disconnection
         }
       } catch (error) {
-        console.error('Dashboard Connection error:', error)
+        console.error('Dashboard Connection error (via proxy):', error)
         setIsConnected(false)
         retryCount++
         setCurrentHeartRate(0); // Reset BPM on connection error

@@ -26,6 +26,7 @@ export default function ControlPage() {
   const [lastUpdateTime, setLastUpdateTime] = useState<string>("")
   const [connectionAttempts, setConnectionAttempts] = useState(0)
   const [stimulatedPulseCount, setStimulatedPulseCount] = useState(0)
+  const [isUpdatingPulseWidth, setIsUpdatingPulseWidth] = useState(false) // New state to control polling override
 
   useEffect(() => {
     if (status === "unauthenticated") {
@@ -43,9 +44,8 @@ export default function ControlPage() {
       if (!isPolling) return;
       
       try {
-        const response = await fetch(`http://${ESP32_IP}/status`, {
+        const response = await fetch(`/api/esp32-proxy?path=status`, {
           method: 'GET',
-          mode: 'cors',
           headers: {
             'Accept': 'application/json',
           },
@@ -60,19 +60,28 @@ export default function ControlPage() {
           setLastEvent(data.lastEvent)
           setIsStimulated(data.stimulated)
           setNaturalPulseCount(data.naturalPulseCount)
-          setPulseWidth(data.pulseWidth || 300)
+          
+          // Only update pulseWidth from poll if we're not currently sending a new value
+          console.log("isUpdatingPulseWidth before conditional update:", isUpdatingPulseWidth);
+          if (!isUpdatingPulseWidth) {
+            console.log("Updating pulseWidth from poll with value:", data.pulseWidth);
+            setPulseWidth(data.pulseWidth || 300) 
+          } else {
+            console.log("Skipping pulseWidth update from poll (isUpdatingPulseWidth is true).");
+          }
+
           setStimulatedPulseCount(data.stimulatedPulseCount || 0)
           setLastUpdateTime(formatTime(Date.now()))
           retryCount = 0
           setConnectionAttempts(0)
         } else {
-          console.log('Status response not OK:', response.status)
+          console.log('Status response not OK (via proxy):', response.status)
           setIsConnected(false)
           retryCount++
           setConnectionAttempts(prev => prev + 1)
         }
       } catch (error) {
-        console.error('Connection error:', error)
+        console.error('Connection error (via proxy):', error)
         setIsConnected(false)
         retryCount++
         setConnectionAttempts(prev => prev + 1)
@@ -117,17 +126,16 @@ export default function ControlPage() {
     setIsLoadingBpm(true)
 
     try {
-      console.log(`Attempting to set BPM to ${bpm} at http://${ESP32_IP}/set_bpm`)
-      const response = await fetch(`http://${ESP32_IP}/set_bpm?bpm=${bpm}`, {
+      console.log(`Attempting to set BPM to ${bpm} via proxy`)
+      const response = await fetch(`/api/esp32-proxy?path=set_bpm&bpm=${bpm}`, {
         method: 'GET',
-        mode: 'cors',
         headers: {
           'Accept': 'text/plain',
         }
       })
       const text = await response.text()
-      console.log('Response status:', response.status)
-      console.log('Response text:', text)
+      console.log('Response status (via proxy):', response.status)
+      console.log('Response text (via proxy):', text)
       
       if (response.ok) {
         toast({
@@ -157,17 +165,16 @@ export default function ControlPage() {
     setIsLoadingSensitivity(true)
 
     try {
-      console.log(`Attempting to set sensitivity to ${dacValue} at http://${ESP32_IP}/set_ref`)
-      const response = await fetch(`http://${ESP32_IP}/set_ref?value=${dacValue}`, {
+      console.log(`Attempting to set sensitivity to ${dacValue} via proxy`)
+      const response = await fetch(`/api/esp32-proxy?path=set_ref&value=${dacValue}`, {
         method: 'GET',
-        mode: 'cors',
         headers: {
           'Accept': 'text/plain',
         }
       })
       const text = await response.text()
-      console.log('Response status:', response.status)
-      console.log('Response text:', text)
+      console.log('Response status (via proxy):', response.status)
+      console.log('Response text (via proxy):', text)
       
       if (response.ok) {
         toast({
@@ -197,17 +204,16 @@ export default function ControlPage() {
     setIsLoadingPacingVoltage(true)
 
     try {
-      console.log(`Attempting to set pacing voltage to ${pacingVoltage} at http://${ESP32_IP}/set_pacing_voltage`)
-      const response = await fetch(`http://${ESP32_IP}/set_pacing_voltage?value=${pacingVoltage}`, {
+      console.log(`Attempting to set pacing voltage to ${pacingVoltage} via proxy`)
+      const response = await fetch(`/api/esp32-proxy?path=set_pacing_voltage&value=${pacingVoltage}`, {
         method: 'GET',
-        mode: 'cors',
         headers: {
           'Accept': 'text/plain',
         }
       })
       const text = await response.text()
-      console.log('Response status:', response.status)
-      console.log('Response text:', text)
+      console.log('Response status (via proxy):', response.status)
+      console.log('Response text (via proxy):', text)
       
       if (response.ok) {
         toast({
@@ -235,19 +241,19 @@ export default function ControlPage() {
   const handlePulseWidthSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsLoadingPulseWidth(true)
+    setIsUpdatingPulseWidth(true); // Set flag to ignore polling updates temporarily
 
     try {
-      console.log(`Attempting to set pulse width to ${pulseWidth}ms at http://${ESP32_IP}/set_pulse_width`)
-      const response = await fetch(`http://${ESP32_IP}/set_pulse_width?width=${pulseWidth}`, {
+      console.log(`Attempting to set pulse width to ${pulseWidth}ms via proxy`)
+      const response = await fetch(`/api/esp32-proxy?path=set_pulse_width&width=${pulseWidth}`, {
         method: 'GET',
-        mode: 'cors',
         headers: {
           'Accept': 'text/plain',
         }
       })
       const text = await response.text()
-      console.log('Response status:', response.status)
-      console.log('Response text:', text)
+      console.log('Response status (via proxy):', response.status)
+      console.log('Response text (via proxy):', text)
       
       if (response.ok) {
         toast({
@@ -269,6 +275,10 @@ export default function ControlPage() {
       })
     } finally {
       setIsLoadingPulseWidth(false)
+      // After a short delay, allow polling to update pulseWidth again
+      setTimeout(() => {
+        setIsUpdatingPulseWidth(false);
+      }, 2000); // Adjust delay as needed (e.g., 2 seconds)
     }
   }
 
