@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useState, useRef } from "react"
 import { useSession } from "next-auth/react"
 import { useRouter } from "next/navigation"
 import { Nav } from "@/components/nav"
@@ -36,7 +36,7 @@ export default function DashboardPage() {
 
   const ESP32_IP = "192.168.89.253" // 🔁 replace with your ESP32 IP
 
-  const [currentHeartRate, setCurrentHeartRate] = useState(0) // Will be calculated from ESP32 data
+  const [currentHeartRate, setCurrentHeartRate] = useState(0)
   const [naturalPulseCount, setNaturalPulseCount] = useState(0)
   const [stimulatedPulseCount, setStimulatedPulseCount] = useState(0)
   const [lastUpdateTime, setLastUpdateTime] = useState<string>("")
@@ -44,6 +44,13 @@ export default function DashboardPage() {
   const [isStimulated, setIsStimulated] = useState(false)
   const [lastEvent, setLastEvent] = useState("")
   const [pulseWidth, setPulseWidth] = useState(0)
+  const [heartRateHistory, setHeartRateHistory] = useState<Array<{time: string, bpm: number}>>([])
+  const [connectionAttempts, setConnectionAttempts] = useState(0);
+
+  // Use useRef to persist these values across renders without causing re-renders
+  const lastPulseTotalRef = useRef(0);
+  const lastPollTimeRef = useRef(Date.now());
+  const isFirstPollRef = useRef(true); // New ref to track first poll
 
   const formatTime = (timestamp: number) => {
     return new Date(timestamp).toLocaleTimeString()
@@ -58,8 +65,6 @@ export default function DashboardPage() {
     let retryCount = 0;
     const maxRetries = 3;
     let isPolling = true;
-    let lastPulseTotal = 0; // To calculate BPM difference
-    let lastPollTime = Date.now();
     
     const pollStatus = async () => {
       if (!isPolling) return;
@@ -75,41 +80,61 @@ export default function DashboardPage() {
         
         if (response.ok) {
           const data = await response.json()
+          console.log("ESP32 Status Data Received:", data); // Log the raw data
           setIsConnected(true)
           setLastEvent(data.lastEvent)
           setIsStimulated(data.stimulated)
-          setNaturalPulseCount(data.naturalPulseCount)
-          setStimulatedPulseCount(data.stimulatedPulseCount)
+          setNaturalPulseCount(Number(data.naturalPulseCount))
+          setStimulatedPulseCount(Number(data.stimulatedPulseCount))
           setPulseWidth(data.pulseWidth || 300)
 
           // Calculate current heart rate (BPM)
-          const totalPulses = data.naturalPulseCount + data.stimulatedPulseCount;
+          const totalPulses = Number(data.naturalPulseCount) + Number(data.stimulatedPulseCount);
           const currentTime = Date.now();
-          const timeElapsedSeconds = (currentTime - lastPollTime) / 1000;
+          const timeElapsedSeconds = (currentTime - lastPollTimeRef.current) / 1000;
 
-          if (timeElapsedSeconds > 0) {
-            const pulsesSinceLastPoll = totalPulses - lastPulseTotal;
+          console.log("Debug - totalPulses:", totalPulses);
+          console.log("Debug - timeElapsedSeconds:", timeElapsedSeconds);
+
+          // Initialize on first poll
+          if (isFirstPollRef.current) {
+            lastPulseTotalRef.current = totalPulses;
+            lastPollTimeRef.current = currentTime;
+            isFirstPollRef.current = false; // Mark as not the first poll anymore
+            setCurrentHeartRate(0); // Initialize BPM to 0
+          } else if (timeElapsedSeconds > 0 && totalPulses >= lastPulseTotalRef.current) {
+            const pulsesSinceLastPoll = totalPulses - lastPulseTotalRef.current;
+            console.log("Debug - pulsesSinceLastPoll:", pulsesSinceLastPoll);
             const calculatedBPM = (pulsesSinceLastPoll / timeElapsedSeconds) * 60;
-            setCurrentHeartRate(Math.round(calculatedBPM));
-          } else {
-            setCurrentHeartRate(0); // Cannot calculate BPM if no time elapsed
+            console.log("Debug - calculatedBPM:", calculatedBPM);
+            
+            if (!isNaN(calculatedBPM) && calculatedBPM >= 0) {
+              const roundedBPM = Math.round(calculatedBPM);
+              setCurrentHeartRate(roundedBPM);
+              
+              setHeartRateHistory(prev => {
+                const newHistory = [...prev, { time: formatTime(currentTime), bpm: roundedBPM }];
+                return newHistory.slice(-20);
+              });
+            }
           }
 
-          lastPulseTotal = totalPulses;
-          lastPollTime = currentTime;
+          lastPulseTotalRef.current = totalPulses;
+          lastPollTimeRef.current = currentTime;
           setLastUpdateTime(formatTime(currentTime))
           retryCount = 0
+          setConnectionAttempts(0)
         } else {
-          console.log('Dashboard Status response not OK (via proxy):', response.status)
+          console.log('Status response not OK (via proxy):', response.status)
           setIsConnected(false)
           retryCount++
-          setCurrentHeartRate(0); // Reset BPM on disconnection
+          setConnectionAttempts(prev => prev + 1)
         }
       } catch (error) {
         console.error('Dashboard Connection error (via proxy):', error)
         setIsConnected(false)
         retryCount++
-        setCurrentHeartRate(0); // Reset BPM on connection error
+        setCurrentHeartRate(0)
       }
     }
 
@@ -123,7 +148,7 @@ export default function DashboardPage() {
           pollStatus()
         }, 5000)
       }
-    }, 1000) // Poll every 1 second for dashboard data
+    }, 1000)
 
     pollStatus()
 
@@ -142,7 +167,7 @@ export default function DashboardPage() {
   }
 
   if (status === "unauthenticated") {
-    return null // Or a loading spinner, as redirect is handled by useEffect
+    return null
   }
 
   return (
@@ -150,7 +175,6 @@ export default function DashboardPage() {
       <Nav />
       <main className="container mx-auto px-4 py-8">
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
-
           {/* Current Heart Rate Card */}
           <div className="rounded-lg border bg-white p-6 shadow-sm lg:col-span-1 flex flex-col items-center justify-center">
             <h2 className="text-xl font-semibold mb-4 text-blue-700">Current Heart Rate</h2>
@@ -178,18 +202,17 @@ export default function DashboardPage() {
           <div className="rounded-lg border bg-white p-6 shadow-sm lg:col-span-2">
             <h2 className="text-xl font-semibold mb-4 text-purple-700">Live Heartbeat Waveform</h2>
             <ResponsiveContainer width="100%" height={200}>
-              <LineChart data={liveWaveformPlaceholder}>
-                <XAxis dataKey="name" hide={true} />
+              <LineChart data={heartRateHistory}>
+                <XAxis dataKey="time" hide={true} />
                 <YAxis hide={true} />
                 <Tooltip />
-                <Line type="monotone" dataKey="uv" stroke="#82ca9d" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="bpm" stroke="#82ca9d" strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
           </div>
-
         </div>
 
-        {/* New: Pulse Bifurcation and Total Counts */}
+        {/* Pulse Bifurcation and Total Counts */}
         <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* Total Pulses Card */}
           <div className="rounded-lg border bg-white p-6 shadow-sm">
@@ -203,7 +226,7 @@ export default function DashboardPage() {
                   <span className="text-green-600">Natural Pulses:</span>
                 </p>
                 <p className="text-2xl font-bold text-gray-800">{naturalPulseCount}</p>
-              </div>
+                </div>
               <div className="flex justify-between items-center">
                 <p className="text-lg font-medium text-gray-700 flex items-center space-x-2">
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" className="w-5 h-5 text-red-600">
@@ -219,7 +242,9 @@ export default function DashboardPage() {
                 <p className="text-xl font-bold text-gray-800">
                   Total Beats:
                 </p>
-                <p className="text-3xl font-extrabold text-blue-700">{naturalPulseCount + stimulatedPulseCount}</p>
+                <p className="text-2xl font-bold text-gray-800">
+                  {naturalPulseCount + stimulatedPulseCount}
+                </p>
               </div>
             </div>
           </div>
@@ -254,16 +279,15 @@ export default function DashboardPage() {
         <div className="mt-6 rounded-lg border bg-white p-6 shadow-sm">
           <h2 className="text-xl font-semibold mb-4 text-green-700">Heart Rate History</h2>
           <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={heartRateHistoryPlaceholder}>
+            <LineChart data={heartRateHistory}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="time" />
               <YAxis />
               <Tooltip />
               <Line type="monotone" dataKey="bpm" stroke="#8884d8" strokeWidth={2} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
       </main>
     </div>
   )
