@@ -1,0 +1,82 @@
+const int pulsePin = 9;
+const int btnPin = 2;
+
+const int led300 = 4;
+const int led700 = 5;
+
+const unsigned long LOW_DELAYS[] = {700, 1700};
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
+
+int modeIndex = 0;
+unsigned long pulseCount = 0;
+
+unsigned long lastPulseTime = 0;
+bool pulseState = LOW;
+
+// --- Debounce Handling ---
+int lastBtnState = HIGH;
+bool btnHandled = false;
+unsigned long lastDebounceTime = 0;
+const unsigned long debounceDelay = 50;
+
+void setup() {
+  pinMode(pulsePin, OUTPUT);
+  pinMode(btnPin, INPUT_PULLUP);
+  pinMode(led300, OUTPUT);
+  pinMode(led700, OUTPUT);
+
+  Serial.begin(9600);
+  while (!Serial);
+
+  Serial.println("=== Pulse Generator (300ms HIGH, 700/1700ms LOW) ===");
+  updateLEDs();
+}
+
+void loop() {
+  unsigned long currentTime = millis();
+
+  // --- Handle Button ---
+  int reading = digitalRead(btnPin);
+  if (reading != lastBtnState) {
+    lastDebounceTime = currentTime;
+  }
+
+  if ((currentTime - lastDebounceTime) > debounceDelay) {
+    if (reading == LOW && !btnHandled) {
+      modeIndex = (modeIndex + 1) % ARRAY_SIZE(LOW_DELAYS);
+      Serial.print("Mode changed to: ");
+      Serial.print(LOW_DELAYS[modeIndex]);
+      Serial.println(" ms");
+      updateLEDs();
+      btnHandled = true;
+    }
+    if (reading == HIGH) {
+      btnHandled = false;
+    }
+  }
+  lastBtnState = reading;
+
+  // --- Pulse Timing ---
+  if (pulseState == LOW && (currentTime - lastPulseTime >= LOW_DELAYS[modeIndex])) {
+    digitalWrite(pulsePin, HIGH);
+    pulseState = HIGH;
+    lastPulseTime = currentTime;
+
+    pulseCount++;
+    Serial.print("Pulse ");
+    Serial.print(pulseCount);
+    Serial.print(" sent at ");
+    Serial.print(currentTime / 1000.0, 3);
+    Serial.println(" s");
+  }
+  else if (pulseState == HIGH && (currentTime - lastPulseTime >= 300)) {
+    digitalWrite(pulsePin, LOW);
+    pulseState = LOW;
+    lastPulseTime = currentTime;
+  }
+}
+
+void updateLEDs() {
+  digitalWrite(led300, (modeIndex == 0) ? HIGH : LOW);
+  digitalWrite(led700, (modeIndex == 1) ? HIGH : LOW);
+}
