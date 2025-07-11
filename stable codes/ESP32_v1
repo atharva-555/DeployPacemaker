@@ -1,0 +1,203 @@
+#include <WiFi.h>
+#include <WebServer.h>
+
+// WiFi credentials
+const char* ssid = "IQOO Z3 5G";
+const char* password = "aaaaaaaa";
+
+// Web Server
+WebServer server(80);
+
+// GPIO Pins
+
+const int heartbeatOut = 18;
+const int heartbeatIn  = 4;
+const int heartbeatLED = 23;
+const int pacingVoltagePin = 26; // DAC2
+const int refVoltagePin = 25;    // DAC1
+
+// Variables
+int bpmSetting = 60;
+unsigned long heartbeatInterval = 1000;
+unsigned long lastHeartbeatOutTime = 0;
+unsigned long lastSecondCheck = 0;
+unsigned long heartbeatLEDBlinkStart = 0;
+bool heartbeatLEDBlinking = false;
+volatile int pulseCount = 0;
+volatile bool pulseDetectedFlag = false;
+String lastEventMsg = "";
+bool stimulusTriggered = false;
+
+int refVoltageValue = 128;       // 0–255 DAC value (~1.65V)
+int pacingVoltageValue = 200;    // 0–255 DAC value (~2.6V)
+
+int pacingPulseDurationMs = 300;  // For LED visibility, 300ms (adjust as needed)
+
+
+// ISR for pulse input
+void IRAM_ATTR onPulseDetected() {
+  pulseCount++;
+  pulseDetectedFlag = true;
+}
+
+// Web root
+void handleRoot() {
+  String html = "<html><body><h1>ESP32 Pacemaker</h1>"
+                "<p>Current BPM: " + String(bpmSetting) + "</p></body></html>";
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.send(200, "text/html", html);
+}
+
+// Update BPM from query param
+void handleSetBPM() {
+  if (server.hasArg("bpm")) {
+    bpmSetting = server.arg("bpm").toInt();
+    heartbeatInterval = 60000 / bpmSetting;
+    Serial.println("[Web] New BPM received: " + String(bpmSetting));
+    Serial.println("[Web] Updated Interval: " + String(heartbeatInterval) + " ms");
+
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.send(200, "text/plain", "BPM updated");
+  } else {
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.send(400, "text/plain", "BPM arg missing!");
+  }
+}
+
+// Set reference voltage (DAC1 - GPIO25)
+void handleSetRefVoltage() {
+  if (server.hasArg("value")) {
+    refVoltageValue = constrain(server.arg("value").toInt(), 0, 255);
+    dacWrite(refVoltagePin, refVoltageValue);
+
+    float voltage = (refVoltageValue / 255.0) * 3.3;
+    Serial.println("[Web] Reference voltage set to: " + String(voltage, 2) + " V");
+
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.send(200, "text/plain", "Reference voltage updated to " + String(voltage, 2) + " V");
+  } else {
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.send(400, "text/plain", "Missing 'value' param");
+  }
+}
+
+// Set pacing voltage (DAC2 - GPIO26)
+void handleSetPacingVoltage() {
+  if (server.hasArg("value")) {
+    pacingVoltageValue = constrain(server.arg("value").toInt(), 0, 255);
+    float voltage = (pacingVoltageValue / 255.0) * 3.3;
+    Serial.println("[Web] Pacing voltage set to: " + String(voltage, 2) + " V");
+
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.send(200, "text/plain", "Pacing voltage updated to " + String(voltage, 2) + " V");
+  } else {
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.send(400, "text/plain", "Missing 'value' param");
+  }
+}
+
+// Add these variables at the top with other variables
+int pacingpulseWidth = 300; // Default pulse width in milliseconds
+
+// Add this new handler function
+void handleSetPulseWidth() {
+  if (server.hasArg("width")) {
+    pacingpulseWidth = constrain(server.arg("width").toInt(), 50, 1000); // Limit between 50ms and 1000ms
+    Serial.println("[Web] Pulse width set to: " + String(pacingpulseWidth) + " ms");
+    
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.send(200, "text/plain", "Pulse width updated to " + String(pacingpulseWidth) + " ms");
+  } else {
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.send(400, "text/plain", "Missing 'width' param");
+  }
+}
+
+// Return system status in JSON
+void handleStatus() {
+  String json = "{";
+  json += "\"bpm\":" + String(bpmSetting) + ",";
+  json += "\"stimulated\":" + String(stimulusTriggered ? "true" : "false") + ",";
+  json += "\"lastEvent\":\"" + lastEventMsg + "\"";
+  json += "}";
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.send(200, "application/json", json);
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(heartbeatOut, OUTPUT);
+  pinMode(heartbeatIn, INPUT);
+  pinMode(heartbeatLED, OUTPUT);
+
+  attachInterrupt(digitalPinToInterrupt(heartbeatIn), onPulseDetected, RISING);
+
+  // Start WiFi
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi Connected. IP: " + WiFi.localIP().toString());
+
+  // Set initial DAC output for reference voltage only
+  dacWrite(refVoltagePin, refVoltageValue);
+  dacWrite(pacingVoltagePin, 0); // Make sure pacing DAC starts low
+
+  // Web routes
+  server.on("/", handleRoot);
+  server.on("/set_bpm", handleSetBPM);
+  server.on("/set_ref", handleSetRefVoltage);
+  server.on("/set_pacing_voltage", handleSetPacingVoltage);
+  server.on("/set_pulse_width", handleSetPulseWidth);  // Add this line
+  server.on("/status", handleStatus);
+  server.begin();
+
+  lastSecondCheck = millis();
+}
+
+void loop() {
+  server.handleClient();
+  unsigned long currentTime = millis();
+
+  // Pulse detected
+  if (pulseDetectedFlag) {
+    pulseDetectedFlag = false;
+    digitalWrite(heartbeatLED, HIGH);
+    heartbeatLEDBlinkStart = currentTime;
+    heartbeatLEDBlinking = true;
+    lastEventMsg = "Pulse detected at " + String(currentTime) + " ms";
+  }
+
+  // Turn off heartbeat LED after short time
+  if (heartbeatLEDBlinking && currentTime - heartbeatLEDBlinkStart > 50) {
+    digitalWrite(heartbeatLED, LOW);
+    heartbeatLEDBlinking = false;
+  }
+
+  // 1-second timer window
+  if (currentTime - lastSecondCheck >= 1000) {
+    noInterrupts();
+    int beats = pulseCount;
+    pulseCount = 0;
+    interrupts();
+
+    if (beats == 0) {
+      // No heartbeat detected — trigger pacing pulse
+      stimulusTriggered = true;
+      lastEventMsg = "Stimulus triggered at " + String(currentTime) + " ms";
+
+      // Generate pacing pulse
+      digitalWrite(heartbeatOut, HIGH);
+      dacWrite(pacingVoltagePin, pacingVoltageValue);
+     delay(pacingpulseWidth);  // Use the configured pulse width
+      digitalWrite(heartbeatOut, LOW);
+      dacWrite(pacingVoltagePin, 0);
+    } else {
+      stimulusTriggered = false;
+    }
+
+    lastSecondCheck = currentTime;
+  }
+}
